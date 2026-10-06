@@ -64,7 +64,8 @@ hardware:
   aiy: true
   # 按鈕 RGB 燈號：color 是 [紅, 綠, 藍]（0~255），pattern 可用 blink / blink_fast / breathe，不填為恆亮
   leds:
-    idle:      {color: [0, 30, 0]}                       # 待機：綠燈微亮
-    recording: {color: [0, 255, 0]}                      # 收音中（直到開口回答前）：綠燈全亮
-    speaking:  {color: [255, 0, 0], pattern: blink}      # 說話中：紅燈閃爍
-    error:     {color: [255, 0, 0], pattern: blink_fast} # 出錯：紅燈快閃
+    idle:       {color: [0, 30, 0]}                       # 待機：綠燈微亮
+    recording:  {color: [0, 255, 0]}                      # 收音中：綠燈恆亮
+    processing: {color: [0, 255, 0], pattern: blink}      # 收完音到開口前：綠燈閃爍
+    speaking:   {color: [255, 0, 0], pattern: blink}      # 說話中：紅燈閃爍
+    error:      {color: [255, 0, 0], pattern: blink_fast} # 出錯：紅燈快閃

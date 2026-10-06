@@ -118,14 +118,17 @@ class Companion:
         try:
             await asyncio.wait([task, waiter], return_when=asyncio.FIRST_COMPLETED)
         finally:
+            pressed = waiter.done() and not waiter.cancelled()
             await cancel_and_wait(waiter)
             if not task.done():
-                log.info("✋ 按鈕打斷")
+                if pressed:  # 程式關閉時也會走到這裡，那不是按鈕打斷
+                    log.info("✋ 按鈕打斷")
                 await cancel_and_wait(task)
         if not task.cancelled():
             task.result()
 
     async def _handle_utterance(self, pcm: bytes) -> None:
+        self.board.led("processing")  # 收完音，辨識與準備回答期間綠燈閃爍
         try:
             text = await self.stt.transcribe(pcm, self.rate)
         except asyncio.CancelledError:
@@ -148,6 +151,7 @@ class Companion:
 
     # ---- 回應一句話（不會拋出例外，取消除外） ----
     async def respond(self, user_text: str) -> None:
+        self.board.led("processing")
         try:
             await self._speak_reply(user_text)
         except asyncio.CancelledError:
