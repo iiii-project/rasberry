@@ -5,9 +5,17 @@ from __future__ import annotations
 import asyncio
 import collections
 import logging
+import warnings
 from typing import AsyncIterator
 
 import webrtcvad
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", DeprecationWarning)  # 3.11+ 提示 audioop 將移除
+    try:
+        import audioop  # C 實作，Pi Zero 上處理整段錄音也只要幾毫秒；Python 3.13 起移除
+    except ImportError:
+        audioop = None
 
 log = logging.getLogger(__name__)
 
@@ -16,6 +24,25 @@ FRAME_MS = 30  # webrtcvad 只接受 10/20/30ms 的音框
 FRAME_BYTES = RATE * FRAME_MS // 1000 * 2  # 16-bit mono
 HOLD_S = 1.0  # 按鈕按住超過這個秒數，視為「按住說話」，放開就結束
 NO_SPEECH_S = 6.0  # 按一下後這麼久都沒開口，就取消收音
+PAD_FRAMES = 10  # 裁掉頭尾靜音時，說話前後各保留 300ms，避免切到字
+TARGET_PEAK = 20000  # 音量正規化的目標峰值（約 -4 dBFS）
+MAX_GAIN = 6.0  # 最多放大 6 倍，避免把底噪放得太大
+
+
+def finalize(frames: list, flags: list) -> bytes:
+    """送去辨識前的處理：裁掉頭尾靜音（上傳更少、辨識更快，也減少靜音造成的幻覺），
+    太小聲時放大音量（辨識更準）。"""
+    speech = [i for i, f in enumerate(flags) if f]
+    if speech:
+        frames = frames[max(0, speech[0] - PAD_FRAMES):speech[-1] + PAD_FRAMES + 1]
+    pcm = b"".join(frames)
+    if audioop is not None and pcm:
+        peak = audioop.max(pcm, 2)
+        if peak:
+            gain = min(TARGET_PEAK / peak, MAX_GAIN)
+            if gain > 1.2:
+                pcm = audioop.mul(pcm, 2, gain)
+    return pcm
 
 
 class MicrophoneError(RuntimeError):
@@ -98,6 +125,7 @@ class Recorder:
         """VAD 模式：自動偵測說話開始與結束，產生一句一句的 PCM。"""
         preroll = collections.deque(maxlen=10)
         voiced = []
+        flags = []
         triggered = False
         silence = 0
 
@@ -105,7 +133,7 @@ class Recorder:
             frame = await self._next_frame()
             if self._reset:
                 preroll.clear()
-                voiced, triggered, silence = [], False, 0
+                voiced, flags, triggered, silence = [], [], False, 0
                 self._reset = False
 
             is_speech = self.vad.is_speech(frame, RATE)
@@ -115,16 +143,18 @@ class Recorder:
                 if sum(s for _, s in preroll) >= 0.7 * preroll.maxlen:
                     triggered = True
                     voiced = [f for f, _ in preroll]
+                    flags = [s for _, s in preroll]
                     preroll.clear()
                     silence = 0
                 continue
 
             voiced.append(frame)
+            flags.append(is_speech)
             silence = 0 if is_speech else silence + 1
             if silence >= self.silence_frames or len(voiced) >= self.max_frames:
                 speech_frames = len(voiced) - silence
-                pcm = b"".join(voiced)
-                voiced, triggered, silence = [], False, 0
+                pcm = finalize(voiced, flags)
+                voiced, flags, triggered, silence = [], [], False, 0
                 if speech_frames >= self.min_frames:
                     yield pcm
 
@@ -137,6 +167,7 @@ class Recorder:
         """
         self.set_muted(False)
         frames = []
+        flags = []
         speech_frames = 0
         silence = 0
         hold = False
@@ -152,7 +183,9 @@ class Recorder:
                     continue
                 frame = await self._next_frame()
                 frames.append(frame)
-                if self.vad.is_speech(frame, RATE):
+                is_speech = self.vad.is_speech(frame, RATE)
+                flags.append(is_speech)
+                if is_speech:
                     speech_frames += 1
                     silence = 0
                 else:
@@ -166,7 +199,9 @@ class Recorder:
                     return b""
             # 結束時最後幾個音框可能還在佇列裡，一起收進來，避免句尾被截掉
             while not self._frames.empty() and len(frames) < self.max_frames:
-                frames.append(await self._next_frame())
+                frame = await self._next_frame()
+                frames.append(frame)
+                flags.append(self.vad.is_speech(frame, RATE))
         finally:
             self.set_muted(True)
-        return b"".join(frames) if speech_frames >= self.min_frames else b""
+        return finalize(frames, flags) if speech_frames >= self.min_frames else b""

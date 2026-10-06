@@ -62,6 +62,7 @@ class Brain:
         self.base_url, self.api_key = net.api_settings("LLM")
         self.model = os.getenv("LLM_MODEL") or llm_cfg.get("model", "gpt-4o-mini")
         self.reasoning_effort = llm_cfg.get("reasoning_effort")
+        self.temperature = llm_cfg.get("temperature")
         self.max_tokens = llm_cfg.get("max_tokens", 1024)
         self.max_turns = llm_cfg.get("max_history_turns", 8)
         total = float(os.getenv("LLM_TIMEOUT_SECONDS") or 60)
@@ -157,6 +158,8 @@ class Brain:
             payload["tools"] = tools
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
+        if self.temperature is not None:
+            payload["temperature"] = self.temperature
 
         calls = {}  # index -> {"id", "name", "arguments"}；工具參數是分段串流過來的，要自己拼起來
         async with net.session().post(

@@ -53,6 +53,7 @@ class FortuneBackend:
             raise RuntimeError("沒有設定後端網址，請在 .env 設定 BACKEND_URL")
         self.fortune_set = cfg.get("fortune_set") or None  # None = 後端的預設籤系
         self.device_id = _device_id(cfg)
+        self._fortunes = {}  # 籤號 -> 籤詩；籤詩幾乎不會變，查過就記住
         self.timeout = aiohttp.ClientTimeout(total=float(cfg.get("timeout_s", 15)), sock_connect=5)
 
     async def _request(self, method: str, path: str, json: dict = None, params: dict = None,
@@ -107,8 +108,15 @@ class FortuneBackend:
         return self.fortune_set
 
     async def lookup_fortune(self, number: int) -> dict:
-        code = await self.default_fortune_set()
-        return await self._request("GET", "/fortune-sets/{}/fortunes/{}/".format(code, int(number)))
+        number = int(number)
+        if number not in self._fortunes:
+            code = await self.default_fortune_set()
+            self._fortunes[number] = await self._request("GET", "/fortune-sets/{}/fortunes/{}/".format(code, number))
+        return self._fortunes[number]
+
+    async def warm_up(self) -> None:
+        """啟動時先查好預設籤系並建立連線，第一次解籤就不用多等一次往返。"""
+        await self.default_fortune_set()
 
     async def recent_divinations(self, limit: int = 5) -> list:
         data = await self._request("GET", "/divinations/", params={"anonymous_user_id": self.device_id})

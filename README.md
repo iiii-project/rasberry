@@ -23,7 +23,12 @@
 | 錄音用 `arecord`、播放用 `mpg123` / `aplay` | 不需要 numpy、PortAudio，Python 不做任何音訊解碼 |
 | 用 aiohttp 直接呼叫 API，不用 openai SDK | 避開 pydantic-core 等需要用 Rust 編譯的套件 |
 | 一次回覆只開一個 mpg123，mp3 片段邊合成邊送進去 | 第一句一合成出來就開始播，句子之間不停頓 |
-| 共用同一個 HTTPS 連線 | 省去每次 TLS 握手（Pi Zero 上很慢） |
+| 按下按鈕時就先建立 HTTPS 連線，收音結束直接沿用 | 收音期間藏住 TLS 握手（Pi Zero 上很慢） |
+| 送辨識前裁掉頭尾靜音 | 上傳量約減半，也減少靜音造成的辨識幻覺 |
+| 太小聲時自動放大音量（最多 6 倍） | 離麥克風遠也辨識得準 |
+| 辨識超過 2.5 秒就同時再送一次，取先回來的 | 消除 OpenAI 偶發的 6～18 秒延遲 |
+| 第一句湊到 8 個字、遇到逗號就先念 | 更早開口 |
+| 籤詩查詢快取、啟動時預載籤系與道歉句 | 第一次解籤不用多等 |
 | 只依賴 5 個 Python 套件，piwheels 都有 armv6 預編譯版 | 安裝時不用在樹莓派上編譯 |
 | 支援 Python 3.7 | 可直接用 AIY 官方映像檔 |
 
@@ -118,7 +123,9 @@ BACKEND_URL=https://iii.dev-serve.me/api/v1   # 求籤後端
 
 - `character.persona`：角色人設
 - `llm.model`：預設 `gpt-4o-mini`
-- `stt.model`：預設 `gpt-4o-mini-transcribe`；`stt.prompt` 可以放常出現的專有名詞，提高辨識率
+- `stt.model`：預設 `gpt-4o-mini-transcribe`（實測比 `whisper-1` 快一倍）；`stt.prompt` 可以放常出現的專有名詞，提高辨識率
+- `stt.hedge_after_s`：辨識超過幾秒就同時再送一次（預設 2.5，0 = 停用）
+- `llm.temperature`：預設 0.7，讓解籤更穩定；推理模型不支援時設成 `null`
 - `tts.voice`、`rate`、`pitch`：聲音設定
 - `audio.mode`：`button`（按下按鈕才收音）/ `vad`
 - `backend.*`：求籤後端設定（見上方「求籤後端」）
@@ -172,4 +179,7 @@ deploy/               systemd 服務
 - **金鶴說系統有狀況、沒辦法解籤**：執行 `bash scripts/setup.sh --check` 看「求籤後端」那幾項；常見原因是 `BACKEND_URL` 打錯或後端的 `DJANGO_ALLOWED_HOSTS` 沒有包含這個主機
 - **聽到自己的聲音一直自言自語**（VAD 模式）：程式在說話時會暫停收音；仍有問題就把 `ECHO_GUARD_S`（`companion.py`）調大，或改用 `button` 模式
 - **沒有聲音 / 錄不到音**：用 `arecord -d 3 test.wav && aplay test.wav` 確認 Voice Bonnet 正常，必要時在 `config.yaml` 指定 ALSA 裝置
-- **反應慢**：大部分時間花在網路上，確認 Wi-Fi 訊號；也可以把 `silence_ms` 調小一點（例如 800）
+- **反應慢**：每一輪結束時記錄會印出各階段耗時，例如
+  `⏱ 錄音 2.9 秒｜辨識 1.0 秒 → LLM 第一個字 +0.6 秒 → 開口 +0.7 秒｜收完音到開口共 2.3 秒`，
+  用 `journalctl -u voice-companion -f` 就能看到慢在哪一段。辨識或 LLM 慢通常是網路或 OpenAI；
+  按一下就放開時，說完要停頓 1 秒才結束收音，改成**按住說話**可以省下這 1 秒（也可以把 `silence_ms` 調小，但容易切斷句子）

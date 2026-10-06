@@ -13,7 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
+from . import net
+from .aio import cancel_and_wait
 from .audio_out import Speaker
 from .hardware import Board
 from .llm import FLUSH, Brain
@@ -24,16 +27,6 @@ log = logging.getLogger(__name__)
 
 ECHO_GUARD_S = 0.3  # 說完後稍等再開麥克風，避免收到殘響
 SORRY = "抱歉，我剛剛恍神了，可以再說一次嗎？"
-
-
-async def cancel_and_wait(task: asyncio.Future) -> None:
-    """取消子任務並等它真正結束（避免 "Task was destroyed but it is pending"）。
-    不會把子任務的 CancelledError 誤當成自己被取消。"""
-    if not task.done():
-        task.cancel()
-    await asyncio.wait([task])
-    if not task.cancelled():
-        task.exception()  # 標記例外已讀取，避免 "exception was never retrieved"
 
 
 class Companion:
@@ -57,6 +50,8 @@ class Companion:
         self.recorder = None
         self.stt = None
         self._warmup = None
+        self._prewarm = None
+        self._t = {}  # 這一輪各階段的時間點，用來記錄耗時
         if use_mic:
             from .audio_in import RATE, Recorder
             from .stt import SpeechToText
@@ -69,17 +64,29 @@ class Companion:
             self.mode = "vad"
 
     async def close(self) -> None:
-        if self._warmup:
-            await cancel_and_wait(self._warmup)
+        for task in (self._warmup, self._prewarm):
+            if task:
+                await cancel_and_wait(task)
         if self.recorder:
             await self.recorder.stop()
         self.board.close()
 
     async def _warm_cache(self) -> None:
+        """啟動時在背景預先準備：道歉句快取、預設籤系、到 API 的連線。"""
         try:
             await self.tts.cached(SORRY)
         except Exception as e:  # 開機時網路還沒好很正常，之後第一次需要時會再試
             log.info("道歉句還沒快取：%r", e)
+        if self.backend:
+            try:
+                await self.backend.warm_up()
+            except Exception as e:
+                log.info("求籤後端還連不上：%r", e)
+
+    def _start_prewarm(self) -> None:
+        """開始收音的同時，先跟辨識 API 建立好 HTTPS 連線（收音通常要好幾秒，剛好藏住握手時間）。"""
+        if self.stt and (self._prewarm is None or self._prewarm.done()):
+            self._prewarm = asyncio.ensure_future(net.prewarm(self.stt.base_url))
 
     # ---- 語音迴圈 ----
     async def run_voice_loop(self) -> None:
@@ -92,6 +99,7 @@ class Companion:
                 self.board.led("idle")
                 await self.board.pressed.wait()
                 self.board.led("recording")
+                self._start_prewarm()
                 pcm = await self.recorder.record_after_press(self.board.released)
                 if pcm:
                     await self._interruptible(self._handle_utterance(pcm))
@@ -129,8 +137,10 @@ class Companion:
 
     async def _handle_utterance(self, pcm: bytes) -> None:
         self.board.led("processing")  # 收完音，辨識與準備回答期間綠燈閃爍
+        self._t = {"start": time.time()}
         try:
             text = await self.stt.transcribe(pcm, self.rate)
+            self._t["stt"] = time.time()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -140,6 +150,16 @@ class Companion:
         log.info("👂 %s", text or "（沒聽清楚）")
         if text:
             await self.respond(text)
+            self._log_timing(len(pcm) / 2 / self.rate)
+
+    def _log_timing(self, audio_s: float) -> None:
+        t = self._t
+        if not {"start", "stt", "text", "audio"} <= set(t):
+            return
+        log.info(
+            "⏱ 錄音 %.1f 秒｜辨識 %.1f 秒 → LLM 第一個字 +%.1f 秒 → 開口 +%.1f 秒｜收完音到開口共 %.1f 秒",
+            audio_s, t["stt"] - t["start"], t["text"] - t["stt"], t["audio"] - t["text"], t["audio"] - t["start"],
+        )
 
     # ---- 文字迴圈（開發測試用，不需要麥克風） ----
     async def run_text_loop(self) -> None:
@@ -180,6 +200,7 @@ class Companion:
             splitter = SentenceSplitter()
             try:
                 async for delta in self.brain.chat(user_text):
+                    self._t.setdefault("text", time.time())
                     # FLUSH：要開始查資料了，模型若已說了半句話，先把它念出來
                     pieces = splitter.flush() if delta == FLUSH else splitter.feed(delta)
                     for s in pieces:
@@ -215,6 +236,7 @@ class Companion:
                         async for chunk in self.tts.stream(sentence):
                             if not speaking:
                                 speaking = True
+                                self._t.setdefault("audio", time.time())
                                 self.board.led("speaking")
                             await chunks.put(chunk)
                     except asyncio.CancelledError:

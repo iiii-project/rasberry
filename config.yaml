@@ -15,6 +15,8 @@ llm:
   model: gpt-4o-mini
   # 推理模型可設 low / medium / high；一般模型設成 null
   reasoning_effort: null
+  # 較低的 temperature 讓解籤更穩定、不亂發揮；推理模型不支援時設成 null
+  temperature: 0.7
   max_tokens: 1024
   # 保留最近幾輪對話作為記憶
   max_history_turns: 8
@@ -37,6 +39,8 @@ stt:
   # 提示辨識結果使用繁體中文；也可以放常出現的專有名詞
   prompt: 以下是台灣繁體中文的對話，對象是廟公金鶴，內容可能提到解籤、籤詩、第幾籤。
   timeout_s: 30
+  # 辨識超過這個秒數還沒回來，就同時再送一次、取先回來的結果（OpenAI 偶爾會慢到 6～18 秒）；0 = 停用
+  hedge_after_s: 2.5
 
 tts:
   # edge-tts 語音，可用 `edge-tts --list-voices | grep zh-TW` 查詢

@@ -11,6 +11,7 @@ import wave
 import aiohttp
 
 from . import net
+from .aio import cancel_and_wait
 
 log = logging.getLogger(__name__)
 
@@ -39,23 +40,47 @@ class SpeechToText:
         self.language = cfg.get("language", "zh")
         self.prompt = cfg.get("prompt", "")
         self.timeout = aiohttp.ClientTimeout(total=float(cfg.get("timeout_s", 30)), sock_connect=10)
+        # 辨識平常約 1 秒，但 OpenAI 偶爾會慢到 6～18 秒；超過這個秒數就同時再送一次，
+        # 哪個先回來用哪個（代價是偶爾多一次辨識費用）。設 0 停用
+        self.hedge_after = float(cfg.get("hedge_after_s", 2.5))
 
     async def transcribe(self, pcm: bytes, rate: int) -> str:
-        wav = to_wav(pcm, rate)
-        for attempt in (1, 2):
-            try:
-                text = await self._request(wav)
-                break
-            except net.RETRYABLE as e:
-                if attempt == 2:
-                    raise
-                log.warning("語音辨識連線失敗，重試一次：%r", e)
-                await asyncio.sleep(0.5)
-
+        text = await self._hedged(to_wav(pcm, rate))
         if HALLUCINATION.search(text):
             log.info("略過疑似幻覺的辨識結果：%s", text)
             return ""
         return text
+
+    async def _hedged(self, wav: bytes) -> str:
+        tasks = [asyncio.ensure_future(self._request(wav))]
+        hedged = retried = False
+        try:
+            while True:
+                timeout = self.hedge_after if self.hedge_after > 0 and not hedged else None
+                done, _ = await asyncio.wait(tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+                if not done:
+                    hedged = True
+                    log.info("語音辨識超過 %.1f 秒，同時再送一次", self.hedge_after)
+                    tasks.append(asyncio.ensure_future(self._request(wav)))
+                    continue
+                error = None
+                for task in done:
+                    tasks.remove(task)
+                    if task.exception() is None:
+                        return task.result()
+                    error = task.exception()
+                if tasks:
+                    continue  # 另一個請求還在跑，等它
+                if isinstance(error, net.RETRYABLE) and not retried:
+                    retried = True
+                    log.warning("語音辨識連線失敗，重試一次：%r", error)
+                    await asyncio.sleep(0.3)
+                    tasks.append(asyncio.ensure_future(self._request(wav)))
+                    continue
+                raise error
+        finally:
+            for task in tasks:
+                await cancel_and_wait(task)
 
     async def _request(self, wav: bytes) -> str:
         # FormData 只能送一次，每次重試都要重建

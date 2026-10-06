@@ -60,3 +60,14 @@ def api_settings(prefix: str) -> tuple:
     if not api_key:
         raise RuntimeError("找不到 API key，請在 .env 設定 LLM_API_KEY")
     return base_url, api_key
+
+
+async def prewarm(base_url: str) -> None:
+    """先跟 API 伺服器建立好 HTTPS 連線放進連線池（例如按下按鈕、開始收音時呼叫），
+    等收音結束要送辨識時就不用再做 TLS 握手——Pi Zero 單核心上握手要花不少時間。
+    用沒有帶金鑰的 HEAD 請求，伺服器會很快回 401，不會產生任何費用。"""
+    try:
+        async with session().head(base_url + "/models", timeout=aiohttp.ClientTimeout(total=5)) as resp:
+            await resp.read()
+    except Exception as e:  # 預熱失敗不影響之後的正式請求
+        log.debug("預先連線失敗：%r", e)
