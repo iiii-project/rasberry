@@ -93,19 +93,16 @@ class Companion:
         self._warmup = asyncio.ensure_future(self._warm_cache())
         await self.recorder.start()
         self.recorder.set_muted(self.mode == "button")
-        log.info("👂 %s", "按下按鈕後開始收音" if self.mode == "button" else "自動偵測說話")
+        log.info("👂 %s", "按住按鈕說話，放開送出" if self.mode == "button" else "自動偵測說話")
         if self.mode == "button":
             while True:
                 self.board.led("idle")
                 await self.board.pressed.wait()
                 self.board.led("recording")
                 self._start_prewarm()
-                pcm = await self.recorder.record_after_press(self.board.released)
+                pcm = await self.recorder.record_while_held(self.board.released)
                 if pcm:
                     await self._interruptible(self._handle_utterance(pcm))
-                elif not self.board.released.is_set():
-                    # 沒錄到話但手還按著：等放開，避免馬上又被當成新的一次按壓
-                    await self.board.released.wait()
         else:
             self.board.led("listening")
             async for pcm in self.recorder.utterances():

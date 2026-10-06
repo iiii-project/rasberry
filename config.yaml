@@ -49,7 +49,7 @@ tts:
   pitch: "+20Hz"
 
 audio:
-  # button = 按下 AIY 按鈕後才開始收音（按一下：說完自動結束；按住：放開就結束）
+  # button = 按住 AIY 按鈕說話，放開就送出
   # vad    = 不用按鈕，一直聽、自動偵測說話（容易被旁人聊天觸發）
   mode: button
   # ALSA 裝置名稱；null = 系統預設（AIY 映像檔已設定好 Voice Bonnet）

@@ -34,11 +34,9 @@
 
 ## 操作與燈號
 
-**按下按鈕後才開始收音**（`config.yaml` 的 `audio.mode: button`，預設）：
-- **按一下就放開**：開始收音，說完停頓 1 秒自動結束；6 秒內沒開口就取消
-- **按住說話**：按住超過 1 秒，就錄到放開為止
+**按住按鈕說話，放開就送出**（`config.yaml` 的 `audio.mode: button`，預設）。只有按住的時候才會收音。
 
-**金鶴說話時按一下按鈕可以打斷它**，打斷的那一按會直接開始收你的下一句。
+**金鶴說話時按下按鈕可以打斷它**，繼續按住就直接開始說你的下一句。
 
 | 燈號 | 狀態 |
 |---|---|
@@ -131,7 +129,7 @@ BACKEND_URL=https://iii.dev-serve.me/api/v1   # 求籤後端
 - `backend.*`：求籤後端設定（見上方「求籤後端」）
 - `hardware.leds`：按鈕燈號的顏色與閃法
 - `audio.input_device` / `output_device`：ALSA 裝置名稱（`arecord -L`、`aplay -L` 列出），`null` 使用系統預設
-- `audio.vad_aggressiveness`、`silence_ms`：環境吵就調高靈敏度；常被截斷就把 `silence_ms` 調長
+- `audio.vad_aggressiveness`、`silence_ms`（只用在 VAD 模式）：環境吵就調高靈敏度；常被截斷就把 `silence_ms` 調長
 - `hardware.aiy`：是否使用 AIY 按鈕與燈號
 
 ## 在電腦上開發
@@ -181,5 +179,4 @@ deploy/               systemd 服務
 - **沒有聲音 / 錄不到音**：用 `arecord -d 3 test.wav && aplay test.wav` 確認 Voice Bonnet 正常，必要時在 `config.yaml` 指定 ALSA 裝置
 - **反應慢**：每一輪結束時記錄會印出各階段耗時，例如
   `⏱ 錄音 2.9 秒｜辨識 1.0 秒 → LLM 第一個字 +0.6 秒 → 開口 +0.7 秒｜收完音到開口共 2.3 秒`，
-  用 `journalctl -u voice-companion -f` 就能看到慢在哪一段。辨識或 LLM 慢通常是網路或 OpenAI；
-  按一下就放開時，說完要停頓 1 秒才結束收音，改成**按住說話**可以省下這 1 秒（也可以把 `silence_ms` 調小，但容易切斷句子）
+  用 `journalctl -u voice-companion -f` 就能看到慢在哪一段。辨識或 LLM 慢通常是網路或 OpenAI
