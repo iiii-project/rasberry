@@ -1,0 +1,52 @@
+# 語音陪伴角色設定檔
+
+character:
+  name: 金鶴
+  # 角色人設（會成為 LLM 的 system prompt）
+  persona: |
+    你是「金鶴」，一個住在樹莓派裡、只能用聲音跟人互動的虛擬角色。
+    個性活潑、溫柔、有點俏皮，喜歡跟人聊天。
+    使用台灣慣用的繁體中文口語回答。
+
+llm:
+  # OpenAI 模型名稱（.env 的 LLM_MODEL 會覆蓋這裡）
+  model: gpt-4o-mini
+  # 推理模型可設 low / medium / high；一般模型設成 null
+  reasoning_effort: null
+  max_tokens: 1024
+  # 保留最近幾輪對話作為記憶
+  max_history_turns: 8
+
+stt:
+  # 雲端語音辨識（OpenAI /audio/transcriptions）；樹莓派只負責錄音
+  model: gpt-4o-mini-transcribe
+  language: zh
+  # 提示辨識結果使用繁體中文；也可以放常出現的專有名詞
+  prompt: 以下是台灣繁體中文的日常對話，對象叫做金鶴。
+  timeout_s: 30
+
+tts:
+  # edge-tts 語音，可用 `edge-tts --list-voices | grep zh-TW` 查詢
+  voice: zh-TW-HsiaoChenNeural
+  rate: "+5%"
+  pitch: "+20Hz"
+
+audio:
+  # vad = 自動偵測說話（免動手）；button = 按住 AIY 按鈕說話（吵雜環境較準）
+  mode: vad
+  # ALSA 裝置名稱；null = 系統預設（AIY 映像檔已設定好 Voice Bonnet）
+  input_device: null
+  output_device: null
+  volume: 1.0
+  # 聽到一句話時先「嗶」一聲
+  beep_on_hear: true
+  # webrtcvad 靈敏度 0~3，環境越吵設越高
+  vad_aggressiveness: 2
+  # 停頓多久視為一句話結束
+  silence_ms: 1000
+  min_utterance_ms: 400
+  max_utterance_s: 15
+
+hardware:
+  # 使用 AIY Voice Kit 的按鈕與燈號（沒有 aiy 函式庫時會自動停用）
+  aiy: true

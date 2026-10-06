@@ -1,0 +1,6 @@
+# 全部都有 armv6（Pi Zero）可用的 wheel，不需要在樹莓派上編譯
+aiohttp
+edge-tts
+pyyaml
+python-dotenv
+webrtcvad-wheels

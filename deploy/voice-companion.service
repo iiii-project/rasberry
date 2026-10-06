@@ -1,0 +1,19 @@
+[Unit]
+Description=Voice Companion (金鶴)
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+User=__USER__
+WorkingDirectory=__ROOT__
+ExecStart=__ROOT__/.venv/bin/python backend/main.py
+Restart=always
+RestartSec=3
+# Pi Zero 只有單核心：提高優先權，避免其他程式讓聲音斷斷續續
+Nice=-5
+Environment=PYTHONUNBUFFERED=1
+# 讓服務使用登入使用者的音訊裝置（若有 PulseAudio）
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
+
+[Install]
+WantedBy=multi-user.target
