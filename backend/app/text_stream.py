@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 
-_HARD_END = re.compile(r"[。！？!?…~～\n]+")
+# 句尾標點後面緊跟的右引號／右括號要留在同一句，不要變成下一句的開頭
+_HARD_END = re.compile(r"[。！？!?…~～\n]+[」』”’\"')）]*")
 _SOFT_END = re.compile(r"[，,、；;：:]")
 SOFT_SPLIT_LEN = 28  # 句子太長時，在逗號處先切，降低第一句的等待時間
 
@@ -18,7 +19,8 @@ class SentenceSplitter:
         out = []
         while True:
             m = _HARD_END.search(self._buf)
-            if m:
+            # 句尾標點剛好在緩衝區最後面時，先等下一段：後面可能還有右引號要跟著這一句
+            if m and m.end() < len(self._buf):
                 out.append(self._buf[: m.end()])
                 self._buf = self._buf[m.end():]
                 continue

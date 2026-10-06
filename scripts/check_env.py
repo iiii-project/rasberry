@@ -131,8 +131,36 @@ async def check_online(cfg):
             fail("edge-tts 沒有回傳音訊")
     except Exception as e:
         fail("edge-tts 失敗：{}".format(e), "檢查網路，或用 `edge-tts --list-voices` 確認聲音名稱")
+
+    try:
+        await check_backend(cfg)
     finally:
         await net.close()
+
+
+async def check_backend(cfg):
+    backend_cfg = cfg.get("backend") or {}
+    if not backend_cfg.get("enabled", True):
+        warn("求籤後端已停用（backend.enabled: false），金鶴不會查籤或求籤")
+        return
+    from app.fortune_backend import BackendError, FortuneBackend
+
+    try:
+        backend = FortuneBackend(backend_cfg)
+    except RuntimeError as e:
+        fail(str(e))
+        return
+    hint = "確認 .env 的 BACKEND_URL、後端是否啟動，以及後端 DJANGO_ALLOWED_HOSTS 是否包含這個主機名稱"
+    try:
+        await backend.health()
+        ok("求籤後端連線正常（{}）".format(backend.base_url))
+        fortune = await backend.lookup_fortune(1)
+        ok("籤詩資料可讀取（籤系 {}：{}）".format(backend.fortune_set, fortune.get("title")))
+        ok("裝置 ID：{}".format(backend.device_id))
+    except BackendError as e:
+        fail("求籤後端錯誤：{}".format(e), hint)
+    except Exception as e:
+        fail("無法連線到求籤後端 {}：{!r}".format(backend.base_url, e), hint)
 
 
 def main():

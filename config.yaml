@@ -2,11 +2,13 @@
 
 character:
   name: 金鶴
-  # 角色人設（會成為 LLM 的 system prompt）
+  # 角色人設（會成為 LLM 的 system prompt）。與 iiii-project-backend 的 Live2D 金鶴是同一個角色
   persona: |
-    你是「金鶴」，一個住在樹莓派裡、只能用聲音跟人互動的虛擬角色。
-    個性活潑、溫柔、有點俏皮，喜歡跟人聊天。
-    使用台灣慣用的繁體中文口語回答。
+    你是金鶴，這座廟裡經驗豐富的廟公，負責幫信眾求籤、解籤。你熟悉籤詩典故與吉凶脈絡，能把籤詩的古文對照信眾問的事情，做出專業、切合實際處境的解釋，並在合適時給出具體建議或提醒。
+    你講話有溫度、有人情味，像看過許多人心事的長輩——先體會對方的心情，再把道理講清楚，不打官腔、不賣弄玄虛。
+    但你話不多，一次只講重點，簡單明瞭，不要囉唆或重複鋪陳。
+    遇到健康、法律、金錢或人身安全的問題，要坦白說明籤詩只是參考，不能取代專業協助，並鼓勵對方尋求合適的現實資源。
+    信眾是用聲音跟你說話，你也只能用聲音回答。請一律使用台灣慣用的繁體中文。
 
 llm:
   # OpenAI 模型名稱（.env 的 LLM_MODEL 會覆蓋這裡）
@@ -17,12 +19,23 @@ llm:
   # 保留最近幾輪對話作為記憶
   max_history_turns: 8
 
+backend:
+  # 連接 iiii-project-backend（AI 求籤系統），讓金鶴可以查籤詩、幫信眾求籤、查過去的求籤紀錄
+  enabled: true
+  # REST API 位址（.env 的 BACKEND_URL 會覆蓋這裡），結尾是 /api/v1
+  base_url: https://iii.dev-serve.me/api/v1
+  # 籤系代碼；null = 使用後端的預設籤系（六十甲子籤）
+  fortune_set: null
+  # 這台裝置的匿名 ID，用來查自己的求籤紀錄；null = 第一次啟動時自動產生並存在 cache/device_id
+  device_id: null
+  timeout_s: 15
+
 stt:
   # 雲端語音辨識（OpenAI /audio/transcriptions）；樹莓派只負責錄音
   model: gpt-4o-mini-transcribe
   language: zh
   # 提示辨識結果使用繁體中文；也可以放常出現的專有名詞
-  prompt: 以下是台灣繁體中文的日常對話，對象叫做金鶴。
+  prompt: 以下是台灣繁體中文的對話，對象是廟公金鶴，內容可能提到求籤、解籤、籤詩、擲筊、聖筊。
   timeout_s: 30
 
 tts:
@@ -32,8 +45,9 @@ tts:
   pitch: "+20Hz"
 
 audio:
-  # vad = 自動偵測說話（免動手）；button = 按住 AIY 按鈕說話（吵雜環境較準）
-  mode: vad
+  # button = 按下 AIY 按鈕後才開始收音（按一下：說完自動結束；按住：放開就結束）
+  # vad    = 不用按鈕，一直聽、自動偵測說話（容易被旁人聊天觸發）
+  mode: button
   # ALSA 裝置名稱；null = 系統預設（AIY 映像檔已設定好 Voice Bonnet）
   input_device: null
   output_device: null
@@ -50,3 +64,10 @@ audio:
 hardware:
   # 使用 AIY Voice Kit 的按鈕與燈號（沒有 aiy 函式庫時會自動停用）
   aiy: true
+  # 按鈕 RGB 燈號：color 是 [紅, 綠, 藍]（0~255），pattern 可用 blink / blink_fast / breathe，不填為恆亮
+  leds:
+    idle:      {color: [0, 30, 0]}                       # 待機：綠燈微亮
+    recording: {color: [0, 255, 0]}                      # 收音中：綠燈全亮
+    thinking:  {color: [0, 255, 0], pattern: breathe}    # 辨識/思考中：綠燈呼吸
+    speaking:  {color: [255, 0, 0], pattern: blink}      # 說話中：紅燈閃爍
+    error:     {color: [255, 0, 0], pattern: blink_fast} # 出錯：紅燈快閃

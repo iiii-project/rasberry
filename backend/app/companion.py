@@ -16,7 +16,7 @@ import logging
 
 from .audio_out import Speaker
 from .hardware import Board
-from .llm import Brain
+from .llm import FLUSH, Brain
 from .text_stream import SentenceSplitter
 from .tts import TextToSpeech
 
@@ -39,10 +39,20 @@ async def cancel_and_wait(task: asyncio.Future) -> None:
 class Companion:
     def __init__(self, cfg: dict, use_mic: bool = True):
         audio = cfg["audio"]
-        self.brain = Brain(cfg["llm"], cfg["character"])
+        self.backend = None
+        tools = None
+        backend_cfg = cfg.get("backend") or {}
+        if backend_cfg.get("enabled", True):
+            from .fortune_backend import FortuneBackend
+            from .tools import FortuneTools
+
+            self.backend = FortuneBackend(backend_cfg)
+            tools = FortuneTools(self.backend)
+            log.info("求籤後端：%s（裝置 ID：%s）", self.backend.base_url, self.backend.device_id)
+        self.brain = Brain(cfg["llm"], cfg["character"], tools=tools)
         self.tts = TextToSpeech(cfg["tts"])
         self.speaker = Speaker(audio)
-        self.board = Board(cfg.get("hardware", {}).get("aiy", True))
+        self.board = Board(cfg.get("hardware") or {})
         self.beep = audio.get("beep_on_hear", True)
         self.mode = audio.get("mode", "vad")
         self.recorder = None
@@ -64,6 +74,8 @@ class Companion:
             await cancel_and_wait(self._warmup)
         if self.recorder:
             await self.recorder.stop()
+        if self.backend:
+            await self.backend.close()
         self.board.close()
 
     async def _warm_cache(self) -> None:
@@ -77,15 +89,18 @@ class Companion:
         self._warmup = asyncio.ensure_future(self._warm_cache())
         await self.recorder.start()
         self.recorder.set_muted(self.mode == "button")
-        log.info("👂 聆聽中（%s）", "按住按鈕說話" if self.mode == "button" else "自動偵測說話")
+        log.info("👂 %s", "按下按鈕後開始收音" if self.mode == "button" else "自動偵測說話")
         if self.mode == "button":
             while True:
-                self.board.led("off")
+                self.board.led("idle")
                 await self.board.pressed.wait()
                 self.board.led("recording")
-                pcm = await self.recorder.record_until(self.board.released)
+                pcm = await self.recorder.record_after_press(self.board.released)
                 if pcm:
                     await self._interruptible(self._handle_utterance(pcm))
+                elif not self.board.released.is_set():
+                    # 沒錄到話但手還按著：等放開，避免馬上又被當成新的一次按壓
+                    await self.board.released.wait()
         else:
             self.board.led("listening")
             async for pcm in self.recorder.utterances():
@@ -168,7 +183,9 @@ class Companion:
             splitter = SentenceSplitter()
             try:
                 async for delta in self.brain.chat(user_text):
-                    for s in splitter.feed(delta):
+                    # FLUSH：要開始查資料了，先把「好，我幫你搖一支籤」這種半句話念出來
+                    pieces = splitter.flush() if delta == FLUSH else splitter.feed(delta)
+                    for s in pieces:
                         await sentences.put(s)
                 for s in splitter.flush():
                     await sentences.put(s)

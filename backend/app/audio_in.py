@@ -14,6 +14,8 @@ log = logging.getLogger(__name__)
 RATE = 16000
 FRAME_MS = 30  # webrtcvad 只接受 10/20/30ms 的音框
 FRAME_BYTES = RATE * FRAME_MS // 1000 * 2  # 16-bit mono
+HOLD_S = 1.0  # 按鈕按住超過這個秒數，視為「按住說話」，放開就結束
+NO_SPEECH_S = 6.0  # 按一下後這麼久都沒開口，就取消收音
 
 
 class MicrophoneError(RuntimeError):
@@ -126,19 +128,45 @@ class Recorder:
                 if speech_frames >= self.min_frames:
                     yield pcm
 
-    async def record_until(self, stop: asyncio.Event) -> bytes:
-        """按鈕模式：從現在錄到 stop 被設定（放開按鈕）為止。"""
+    async def record_after_press(self, released: asyncio.Event) -> bytes:
+        """按鈕模式：按下按鈕後才開始收音（呼叫時按鈕剛被按下）。兩種用法都支援：
+
+        - 按住說話：按住超過 HOLD_S 秒，就錄到放開按鈕為止
+        - 按一下就放開：開始收音，由 VAD 偵測到說完（停頓 silence_ms）自動結束；
+          NO_SPEECH_S 秒內都沒開口就取消
+        """
         self.set_muted(False)
         frames = []
+        speech_frames = 0
+        silence = 0
+        hold = False
         try:
-            while not stop.is_set() and len(frames) < self.max_frames:
+            while len(frames) < self.max_frames:
+                elapsed = len(frames) * FRAME_MS / 1000
+                if not released.is_set() and elapsed >= HOLD_S:
+                    hold = True
+                if hold and released.is_set():
+                    break
                 if self._frames.empty():
                     await asyncio.sleep(FRAME_MS / 1000)
                     continue
-                frames.append(await self._next_frame())
-            # 放開按鈕時，最後幾個音框可能還在佇列裡，一起收進來，避免句尾被截掉
+                frame = await self._next_frame()
+                frames.append(frame)
+                if self.vad.is_speech(frame, RATE):
+                    speech_frames += 1
+                    silence = 0
+                else:
+                    silence += 1
+                if hold:
+                    continue  # 按住期間由使用者決定何時結束
+                if speech_frames >= self.min_frames and silence >= self.silence_frames:
+                    break
+                if speech_frames < self.min_frames and elapsed >= NO_SPEECH_S:
+                    log.info("按下按鈕後沒有聽到說話，取消")
+                    return b""
+            # 結束時最後幾個音框可能還在佇列裡，一起收進來，避免句尾被截掉
             while not self._frames.empty() and len(frames) < self.max_frames:
                 frames.append(await self._next_frame())
         finally:
             self.set_muted(True)
-        return b"".join(frames) if len(frames) >= self.min_frames else b""
+        return b"".join(frames) if speech_frames >= self.min_frames else b""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import ssl
 
 import aiohttp
 
@@ -19,12 +20,24 @@ RETRYABLE = (aiohttp.ClientConnectionError, asyncio.TimeoutError)
 _session = None  # type: aiohttp.ClientSession | None
 
 
+def _ssl_context():
+    """AIY 映像檔（2021 年）內建的根憑證可能太舊，改用 certifi（edge-tts 的相依套件，一定有裝）
+    提供的最新憑證清單驗證 HTTPS。"""
+    try:
+        import certifi
+    except ImportError:
+        return None
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 def session() -> aiohttp.ClientSession:
     global _session
     if _session is None or _session.closed:
-        _session = aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(keepalive_timeout=KEEPALIVE_S)
-        )
+        kwargs = {"keepalive_timeout": KEEPALIVE_S}
+        context = _ssl_context()
+        if context is not None:
+            kwargs["ssl"] = context
+        _session = aiohttp.ClientSession(connector=aiohttp.TCPConnector(**kwargs))
     return _session
 
 
