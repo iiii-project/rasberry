@@ -36,7 +36,7 @@ class Speaker:
 
     async def play_stream(self, chunks: asyncio.Queue) -> None:
         """一次回覆只開一個 mpg123，把每句的 mp3 依序灌進去，句子之間不會有停頓。
-        chunks 收到 None 代表結束。"""
+        chunks 收到 None 代表結束。被取消（按鈕打斷）時會立刻停止播放。"""
         proc = await asyncio.create_subprocess_exec(
             *self._mpg123_cmd(),
             stdin=asyncio.subprocess.PIPE,
@@ -59,11 +59,21 @@ class Speaker:
                 proc.kill()
                 await proc.wait()
 
+    async def play_bytes(self, mp3: bytes) -> None:
+        chunks = asyncio.Queue()  # type: asyncio.Queue
+        chunks.put_nowait(mp3)
+        chunks.put_nowait(None)
+        await self.play_stream(chunks)
+
     async def beep(self) -> None:
+        """提示音只是輔助，失敗時記錄下來就好，不影響後續辨識。"""
         cmd = ["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", str(BEEP_RATE), "-c", "1"]
         if self.device:
             cmd += ["-D", self.device]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
-        )
-        await proc.communicate(self._beep)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+            )
+            await proc.communicate(self._beep)
+        except OSError as e:
+            log.warning("提示音播放失敗：%s", e)

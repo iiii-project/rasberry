@@ -2,20 +2,29 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 
 import aiohttp
 
-OPENAI_BASE_URL = "https://api.openai.com/v1"
+log = logging.getLogger(__name__)
 
-_session: aiohttp.ClientSession | None = None
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+KEEPALIVE_S = 60  # aiohttp 預設閒置 15 秒就斷線；拉長讓相鄰兩輪對話能重用連線，省下 TLS 握手
+
+# 值得重試一次的暫時性錯誤（Wi-Fi 閃斷、伺服器關掉閒置連線、逾時）
+RETRYABLE = (aiohttp.ClientConnectionError, asyncio.TimeoutError)
+
+_session = None  # type: aiohttp.ClientSession | None
 
 
 def session() -> aiohttp.ClientSession:
-    """重複使用同一個連線，省去每次 TLS 握手（在 Pi Zero 上很花時間）。"""
     global _session
     if _session is None or _session.closed:
-        _session = aiohttp.ClientSession()
+        _session = aiohttp.ClientSession(
+            connector=aiohttp.TCPConnector(keepalive_timeout=KEEPALIVE_S)
+        )
     return _session
 
 
@@ -24,7 +33,7 @@ async def close() -> None:
         await _session.close()
 
 
-def api_settings(prefix: str) -> tuple[str, str]:
+def api_settings(prefix: str) -> tuple:
     """回傳 (base_url, api_key)。依序讀取 {prefix}_*、LLM_*、OPENAI_*。"""
     def pick(name: str) -> str:
         for p in (prefix, "LLM", "OPENAI"):

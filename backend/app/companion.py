@@ -1,4 +1,13 @@
-"""主流程：聆聽 → 辨識 → 思考 → 說話。"""
+"""主流程：聆聽 → 辨識 → 思考 → 說話。
+
+錯誤處理原則：沒有螢幕，所以任何錯誤都要用聲音（道歉句）和燈號讓人知道，
+而且語音迴圈本身絕對不能因為單次失敗而停下來。唯一的例外是麥克風壞掉，
+這時讓程式結束，交給 systemd 重新啟動。
+
+注意 Python 3.7 的 asyncio.CancelledError 是 Exception 的子類別（3.8 起不是），
+所以每個 `except Exception` 前面都要先放 `except asyncio.CancelledError: raise`，
+否則按鈕打斷會被當成錯誤處理。
+"""
 
 from __future__ import annotations
 
@@ -17,6 +26,16 @@ ECHO_GUARD_S = 0.3  # 說完後稍等再開麥克風，避免收到殘響
 SORRY = "抱歉，我剛剛恍神了，可以再說一次嗎？"
 
 
+async def cancel_and_wait(task: asyncio.Future) -> None:
+    """取消子任務並等它真正結束（避免 "Task was destroyed but it is pending"）。
+    不會把子任務的 CancelledError 誤當成自己被取消。"""
+    if not task.done():
+        task.cancel()
+    await asyncio.wait([task])
+    if not task.cancelled():
+        task.exception()  # 標記例外已讀取，避免 "exception was never retrieved"
+
+
 class Companion:
     def __init__(self, cfg: dict, use_mic: bool = True):
         audio = cfg["audio"]
@@ -28,6 +47,7 @@ class Companion:
         self.mode = audio.get("mode", "vad")
         self.recorder = None
         self.stt = None
+        self._warmup = None
         if use_mic:
             from .audio_in import RATE, Recorder
             from .stt import SpeechToText
@@ -40,15 +60,24 @@ class Companion:
             self.mode = "vad"
 
     async def close(self) -> None:
+        if self._warmup:
+            await cancel_and_wait(self._warmup)
         if self.recorder:
             await self.recorder.stop()
         self.board.close()
 
+    async def _warm_cache(self) -> None:
+        try:
+            await self.tts.cached(SORRY)
+        except Exception as e:  # 開機時網路還沒好很正常，之後第一次需要時會再試
+            log.info("道歉句還沒快取：%r", e)
+
     # ---- 語音迴圈 ----
     async def run_voice_loop(self) -> None:
+        self._warmup = asyncio.ensure_future(self._warm_cache())
         await self.recorder.start()
         self.recorder.set_muted(self.mode == "button")
-        log.info("👂 聆聽中（%s 模式）", "按住按鈕說話" if self.mode == "button" else "自動偵測")
+        log.info("👂 聆聽中（%s）", "按住按鈕說話" if self.mode == "button" else "自動偵測說話")
         if self.mode == "button":
             while True:
                 self.board.led("off")
@@ -56,29 +85,49 @@ class Companion:
                 self.board.led("recording")
                 pcm = await self.recorder.record_until(self.board.released)
                 if pcm:
-                    await self._handle_utterance(pcm)
+                    await self._interruptible(self._handle_utterance(pcm))
         else:
             self.board.led("listening")
             async for pcm in self.recorder.utterances():
                 self.recorder.set_muted(True)  # 思考/說話時不收音，避免聽到自己的聲音
-                await self._handle_utterance(pcm)
+                await self._interruptible(self._handle_utterance(pcm))
                 await asyncio.sleep(ECHO_GUARD_S)
                 self.recorder.set_muted(False)
                 self.board.led("listening")
 
+    async def _interruptible(self, coro) -> None:
+        """執行 coro；期間按下按鈕就立刻打斷（停止辨識、思考或說話）。
+        按鈕模式下，打斷用的這一按會接著直接開始錄下一句。"""
+        task = asyncio.ensure_future(coro)
+        if not self.board.available or self.board.pressed.is_set():
+            await task
+            return
+        waiter = asyncio.ensure_future(self.board.pressed.wait())
+        try:
+            await asyncio.wait([task, waiter], return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            await cancel_and_wait(waiter)
+            if not task.done():
+                log.info("✋ 按鈕打斷")
+                await cancel_and_wait(task)
+        if not task.cancelled():
+            task.result()
+
     async def _handle_utterance(self, pcm: bytes) -> None:
         self.board.led("thinking")
+        if self.beep:
+            await self.speaker.beep()
         try:
-            if self.beep:
-                await self.speaker.beep()
             text = await self.stt.transcribe(pcm, self.rate)
-            log.info("👂 %s", text or "（沒聽清楚）")
-            if text:
-                await self.respond(text)
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            log.exception("處理語音時發生錯誤")
-            self.board.led("error")
-            await self._speak_lines([SORRY])
+            log.exception("語音辨識失敗")
+            await self._say_sorry()
+            return
+        log.info("👂 %s", text or "（沒聽清楚）")
+        if text:
+            await self.respond(text)
 
     # ---- 文字迴圈（開發測試用，不需要麥克風） ----
     async def run_text_loop(self) -> None:
@@ -88,15 +137,28 @@ class Companion:
             if text:
                 await self.respond(text)
 
-    # ---- 回應一句話 ----
+    # ---- 回應一句話（不會拋出例外，取消除外） ----
     async def respond(self, user_text: str) -> None:
         self.board.led("thinking")
         try:
             await self._speak_reply(user_text)
+        except asyncio.CancelledError:
+            raise
         except Exception:
             log.exception("產生回覆失敗")
-            self.board.led("error")
-            await self._speak_lines([SORRY])
+            await self._say_sorry()
+
+    async def _say_sorry(self) -> None:
+        """出錯時的最後防線：播放快取的道歉句。這裡再失敗也只記錄，不往外拋。"""
+        self.board.led("error")
+        try:
+            mp3 = await self.tts.cached(SORRY)
+            if mp3:
+                await self.speaker.play_bytes(mp3)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("連道歉句都播不出來（網路或喇叭異常）")
 
     async def _speak_reply(self, user_text: str) -> None:
         """LLM 串流 → 切句 → TTS → 播放，同時進行，第一句好了就先念。"""
@@ -116,17 +178,11 @@ class Companion:
         producer = asyncio.ensure_future(produce())
         try:
             await self._speak_queue(sentences)
-        finally:
-            if not producer.done():
-                producer.cancel()
-        await producer  # 把 LLM 的例外拋出來
-
-    async def _speak_lines(self, lines: list) -> None:
-        q = asyncio.Queue()  # type: asyncio.Queue
-        for line in lines:
-            q.put_nowait(line)
-        q.put_nowait(None)
-        await self._speak_queue(q)
+        except BaseException:
+            await cancel_and_wait(producer)
+            raise
+        # 播完了：LLM 若中途出錯，在這裡拋出，讓 respond() 念道歉句
+        await producer
 
     async def _speak_queue(self, sentences: asyncio.Queue) -> None:
         # TTS 的 mp3 片段一邊產生一邊送進 mpg123，邊合成邊播放
@@ -147,8 +203,10 @@ class Companion:
                                 speaking = True
                                 self.board.led("speaking")
                             await chunks.put(chunk)
+                    except asyncio.CancelledError:
+                        raise
                     except Exception:
-                        log.exception("TTS 失敗：%s", sentence)
+                        log.exception("TTS 失敗，略過這句：%s", sentence)
             finally:
                 await chunks.put(None)
 
@@ -156,5 +214,4 @@ class Companion:
         try:
             await self.speaker.play_stream(chunks)
         finally:
-            if not synth.done():
-                synth.cancel()
+            await cancel_and_wait(synth)

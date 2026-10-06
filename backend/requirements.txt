@@ -1,6 +1,8 @@
-# 全部都有 armv6（Pi Zero）可用的 wheel，不需要在樹莓派上編譯
+# 全部都有 armv6（Pi Zero）+ Python 3.7 可用的預編譯 wheel，不需要在樹莓派上編譯
 aiohttp
 edge-tts
 pyyaml
 python-dotenv
-webrtcvad-wheels
+# webrtcvad-wheels 2.0.12 之後的版本沒有 cp37 armv6 wheel，AIY 映像檔（Python 3.7）固定用這版
+webrtcvad-wheels==2.0.11.post1; python_version < "3.8"
+webrtcvad-wheels; python_version >= "3.8"

@@ -66,7 +66,6 @@ step "檢查系統"
 [ "$(id -u)" -ne 0 ] || die "請不要用 sudo 執行，直接用一般使用者執行：bash scripts/setup.sh"
 
 MODEL=$(tr -d '\0' 2>/dev/null </proc/device-tree/model || echo "非樹莓派")
-CODENAME=$(. /etc/os-release 2>/dev/null && echo "${VERSION_CODENAME:-unknown}")
 info "硬體：$MODEL"
 info "系統：$(. /etc/os-release 2>/dev/null && echo "$PRETTY_NAME")（$(uname -m)）"
 info "記憶體：$(free -m | awk '/^Mem:/ {print $2}') MB"
@@ -80,6 +79,11 @@ PYVER=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')
 python3 -c 'import sys; sys.exit(sys.version_info < (3, 7))' || die "Python $PYVER 太舊，需要 3.7 以上"
 okay "Python $PYVER"
 
+# Pi Zero 沒有 RTC，時間錯誤會讓 HTTPS 與 apt 都失敗，所以先校正時間
+if [ "$(date +%Y)" -lt 2025 ]; then
+  bash "$ROOT/scripts/fix_apt.sh" --time-only
+fi
+
 # 只要拿得到任何 HTTP 回應就代表網路正常（curl 不存在時改用 python）
 if ! curl -s -m 10 -o /dev/null https://api.openai.com 2>/dev/null \
    && ! python3 -c 'import urllib.request as u; u.urlopen("https://www.google.com", timeout=10)' 2>/dev/null; then
@@ -89,7 +93,7 @@ okay "網路連線正常"
 
 # ---------- 2. 系統套件 ----------
 step "安裝系統套件（mpg123、alsa-utils、python3-venv）"
-APT_PKGS="mpg123 alsa-utils python3-venv python3-pip curl"
+APT_PKGS="mpg123 alsa-utils python3-venv python3-pip"
 
 missing_pkgs() {
   local p out=""
@@ -97,15 +101,6 @@ missing_pkgs() {
     dpkg -s "$p" >/dev/null 2>&1 || out="$out $p"
   done
   echo "$out"
-}
-
-fix_buster_sources() {
-  # Raspbian Buster 已停止支援，套件來源搬到 legacy.raspbian.org
-  if grep -qs 'raspbian.raspberrypi.org' /etc/apt/sources.list; then
-    warn "Buster 套件來源已失效，改用 legacy.raspbian.org（原檔備份為 sources.list.bak）"
-    sudo cp -n /etc/apt/sources.list /etc/apt/sources.list.bak
-    sudo sed -i 's#raspbian.raspberrypi.org/raspbian#legacy.raspbian.org/raspbian#g' /etc/apt/sources.list
-  fi
 }
 
 if [ "$SKIP_APT" = 1 ]; then
@@ -116,10 +111,9 @@ else
   info "需要安裝：$(missing_pkgs)"
   info "（需要 sudo 密碼）"
   sudo -v || die "無法取得 sudo 權限"
-  if ! run sudo apt-get update; then
-    [ "$CODENAME" = buster ] && fix_buster_sources
-    run sudo apt-get update || warn "apt-get update 仍有錯誤（可能是第三方來源過期），嘗試繼續安裝"
-  fi
+  # 舊版 Buster 映像檔的套件來源已下架，fix_apt.sh 會自動修好再 update
+  bash "$ROOT/scripts/fix_apt.sh" 2>&1 | tee -a "$LOG"
+  [ "${PIPESTATUS[0]}" = 0 ] || die "apt-get update 失敗，請把上面的錯誤訊息回報"
   # shellcheck disable=SC2046
   run sudo apt-get install -y $(missing_pkgs) || die "系統套件安裝失敗"
   okay "完成"
@@ -166,11 +160,8 @@ if [ -n "$KEY" ] && [ "$KEY" != "sk-..." ]; then
 elif [ "$ASSUME_YES" = 0 ] && [ -t 0 ]; then
   read -r -s -p "    請輸入 OpenAI API key（輸入時不會顯示）：" KEY; echo
   if [ -n "$KEY" ]; then
-    if grep -qE '^LLM_API_KEY=' .env; then
-      sed -i "s#^LLM_API_KEY=.*#LLM_API_KEY=$KEY#" .env
-    else
-      echo "LLM_API_KEY=$KEY" >>.env
-    fi
+    # 用 shell 內建的 echo 寫入，金鑰不會出現在行程清單（ps）裡
+    { grep -vE '^LLM_API_KEY=' .env; echo "LLM_API_KEY=$KEY"; } >.env.tmp && mv .env.tmp .env
     chmod 600 .env
     okay "已寫入 .env"
   else

@@ -39,6 +39,10 @@ arecord ──► VAD 斷句 ─(wav)─► 雲端語音辨識 ──► 雲端 
 
 聽到一句話時會先「嗶」一聲。
 
+**按一下按鈕可以打斷金鶴**（辨識、思考或說話中都可以）。按鈕模式下，打斷的那一按會直接開始錄你的下一句。
+
+出錯時（斷網、API 失敗）金鶴會念「抱歉，我剛剛恍神了」，按鈕燈閃 3 下。這句話第一次合成後會快取在 `cache/`，之後斷網也念得出來。麥克風故障時程式會結束，由 systemd 在 3 秒後自動重新啟動。
+
 ## 安裝
 
 1. 用 AIY 官方映像檔（已內建 Voice Bonnet 驅動與 `aiy` 按鈕/燈號函式庫），連上 Wi-Fi
@@ -53,7 +57,7 @@ bash scripts/setup.sh
 安裝腳本會依序：
 
 1. 檢查硬體、Python 版本（3.7 以上）和網路
-2. 安裝 `mpg123`、`alsa-utils`；舊版 Buster 映像檔的套件來源失效時，會自動改用 `legacy.raspbian.org`
+2. 修復 Buster 的套件來源（見下方「apt-get update 失敗」），再安裝 `mpg123`、`alsa-utils`
 3. 把使用者加入 `audio` / `gpio` 群組
 4. 建立 `.venv`（共用系統的 aiy 函式庫），透過 piwheels 安裝預先編譯好的套件
 5. 詢問 OpenAI API key，寫入 `.env`
@@ -125,13 +129,20 @@ backend/
   app/net.py          共用 HTTP 連線、API 設定
   app/companion.py    主流程
 scripts/setup.sh      環境安裝腳本
+scripts/fix_apt.sh    修復 Buster 的 apt-get update 錯誤
 scripts/check_env.py  環境檢查
 deploy/               systemd 服務
 ```
 
 ## 常見問題
 
-- **`apt-get update` 失敗**：安裝腳本會自動把 Buster 的套件來源改成 `legacy.raspbian.org`；若仍失敗，多半是映像檔裡其他第三方來源過期，可以先用 `--skip-apt` 並手動安裝 `mpg123`
+- **`apt-get update` 失敗**：AIY 官方映像檔是 Raspbian Buster，原本的套件來源已經失效。執行 `bash scripts/fix_apt.sh`（`setup.sh` 會自動執行）會：
+  - 把 `raspbian.raspberrypi.org`（已下架，404）改成 `legacy.raspbian.org`
+  - 停用已關閉的 Google AIY 來源 `packages.cloud.google.com`（404；已安裝的 aiy 套件不受影響）
+  - 用 `--allow-releaseinfo-change` 接受 Buster 從 `stable` 改名為 `oldoldstable`
+  - 時間錯誤（Pi Zero 沒有 RTC 電池）時先校正時間
+
+  修改前會把設定備份到 `/etc/apt/backup-<時間>/`。如果仍然失敗，請把錯誤訊息完整貼出來
 - **聽到自己的聲音一直自言自語**：程式在說話時會暫停收音；仍有問題就把 `ECHO_GUARD_S`（`companion.py`）調大，或改用 `button` 模式
 - **沒有聲音 / 錄不到音**：用 `arecord -d 3 test.wav && aplay test.wav` 確認 Voice Bonnet 正常，必要時在 `config.yaml` 指定 ALSA 裝置
 - **反應慢**：大部分時間花在網路上，確認 Wi-Fi 訊號；也可以把 `silence_ms` 調小一點（例如 800）

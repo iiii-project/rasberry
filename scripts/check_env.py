@@ -145,7 +145,7 @@ def main():
     check_hardware()
     cfg = check_config()
     if cfg is not None and not args.offline and not any("套件" in f for f in failures):
-        asyncio.get_event_loop().run_until_complete(check_online(cfg))
+        asyncio.run(check_online(cfg))
 
     print()
     if failures:

@@ -7,6 +7,7 @@
 import argparse
 import asyncio
 import logging
+import signal
 import sys
 from pathlib import Path
 
@@ -41,7 +42,13 @@ if __name__ == "__main__":
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # systemctl stop 送的是 SIGTERM；讓它跟 Ctrl+C 一樣走正常收尾（關燈、停止錄音）
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     try:
         asyncio.run(main(args))
     except (KeyboardInterrupt, EOFError):
         pass
+    except Exception:
+        # 例如麥克風壞掉：以非 0 結束碼離開，讓 systemd 重新啟動
+        logging.exception("金鶴意外停止")
+        sys.exit(1)
