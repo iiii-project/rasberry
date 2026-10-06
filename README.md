@@ -1,16 +1,16 @@
 # 語音陪伴角色「金鶴」（Google AIY Voice Kit V2）
 
-把 AIY Voice Kit 變成廟公「金鶴」的實體版：按下按鈕對它說話，它用語音回答，還能幫你**求籤、解籤**。
+把 AIY Voice Kit 變成廟公「金鶴」的實體版：按下按鈕對它說話，它用語音回答，報上籤號還能幫你**解籤**。
 不需要螢幕，按鈕上的 RGB 燈顯示它現在的狀態。
 
 金鶴與 [iiii-project-backend](../iiii-project-backend)（AI 求籤系統）的 Live2D 金鶴是同一個角色，
-籤詩資料與求籤紀錄都來自同一個後端。
+籤詩資料與求籤紀錄都來自同一個後端。金鶴只做對話，**不會搖籤**。
 
 專為 **Raspberry Pi Zero WH**（單核 armv6、512MB RAM）設計：樹莓派只負責錄音和播放，語音辨識、對話、語音合成都交給雲端。
 
 ```
 按下按鈕 → arecord ─(wav)─► 雲端語音辨識 ──► 雲端 LLM（串流）◄──► 求籤後端 REST API
-                                                 │ 一句一句          （查籤、抽籤、擲筊、紀錄）
+                                                 │ 一句一句          （唯讀：查籤詩、查紀錄）
                                                  ▼
 喇叭 ◄── mpg123 ◄──── mp3 片段即時串流 ◄──── edge-tts
 ```
@@ -33,13 +33,12 @@
 - **按一下就放開**：開始收音，說完停頓 1 秒自動結束；6 秒內沒開口就取消
 - **按住說話**：按住超過 1 秒，就錄到放開為止
 
-開始處理時會先「嗶」一聲。**金鶴說話時按一下按鈕可以打斷它**，打斷的那一按會直接開始收你的下一句。
+**金鶴說話時按一下按鈕可以打斷它**，打斷的那一按會直接開始收你的下一句。
 
 | 燈號 | 狀態 |
 |---|---|
 | 🟢 綠燈微亮 | 待機，等你按按鈕 |
-| 🟢 綠燈全亮 | 收音中 |
-| 🟢 綠燈呼吸 | 辨識、思考、查籤中 |
+| 🟢 綠燈全亮 | 收音中（放開按鈕後維持綠燈，直到金鶴開口） |
 | 🔴 紅燈閃爍 | 金鶴說話中 |
 | 🔴 紅燈快閃 | 發生錯誤 |
 
@@ -49,22 +48,20 @@
 
 ## 求籤後端
 
-金鶴透過 LLM 的工具呼叫（function calling）使用後端資料，不直接連資料庫：
+金鶴透過 LLM 的工具呼叫（function calling）**唯讀**查詢後端資料，不直接連資料庫，也不會建立或修改任何紀錄：
 
 | 你說 | 金鶴做的事 | 後端 API |
 |---|---|---|
-| 「幫我求一支籤，我想問換工作」 | 建立求籤紀錄 → 祈求 → 抽籤 → 擲筊，念出籤詩並解說 | `POST /divinations/` → `prayer-complete` → `draw` → `blocks` |
-| 「幫我解第十籤」 | 查詢籤詩並解說 | `GET /fortune-sets/{籤系}/fortunes/{籤號}/` |
+| 「我抽到第二十籤，想問感情」 | 查詢籤詩，念出籤詩原文後解說 | `GET /fortune-sets/{籤系}/fortunes/{籤號}/` |
 | 「我之前求過什麼？」 | 查這台裝置的求籤紀錄 | `GET /divinations/?anonymous_user_id=…` |
+| 「我想求籤」 | 請你先在廟裡抽好籤，再把籤號告訴它（金鶴不會搖籤） | — |
 
-- 還沒說要問什麼事時，金鶴會先問清楚再抽籤；抽籤前會先說「好，我幫你搖一支籤」
-- 抽到的籤會記在「本次求籤資料」，之後的追問都會接著這支籤回答
-- 擲出聖筊後，會在背景請後端完成解籤，所以這筆紀錄在網頁上也是完整的
-- 這台裝置以匿名身分求籤，裝置 ID 第一次啟動時產生，存在 `cache/device_id`
-- **每一次求籤都會在後端資料庫建立一筆真的紀錄**
+- 需要查資料時，金鶴會先查完再一次把回答講完，中間不會先開口
+- 查到的籤會記在「籤詩資料」，之後的追問都會接著這支籤回答
+- 裝置 ID 第一次啟動時產生，存在 `cache/device_id`，用來查這台裝置的求籤紀錄
 
 設定：`.env` 的 `BACKEND_URL`（預設 `https://iii.dev-serve.me/api/v1`）。如果自架後端，後端的 `DJANGO_ALLOWED_HOSTS` 必須包含這個主機名稱，否則會收到 HTTP 400。
-不需要求籤功能時，把 `config.yaml` 的 `backend.enabled` 設成 `false`。
+不需要查籤功能時，把 `config.yaml` 的 `backend.enabled` 設成 `false`。
 
 ## 安裝
 
@@ -148,7 +145,7 @@ backend/
   app/audio_in.py     arecord 錄音 + 按鈕收音 / VAD 斷句
   app/stt.py          雲端語音辨識
   app/llm.py          雲端 LLM 串流對話、工具呼叫與對話記憶
-  app/tools.py        給 LLM 呼叫的工具（求籤、查籤、查紀錄）
+  app/tools.py        給 LLM 呼叫的工具（查籤詩、查紀錄）
   app/fortune_backend.py  求籤後端 REST API 用戶端
   app/text_stream.py  串流切句
   app/tts.py          edge-tts 語音合成（串流）
@@ -171,7 +168,7 @@ deploy/               systemd 服務
   - 時間錯誤（Pi Zero 沒有 RTC 電池）時先校正時間
 
   修改前會把設定備份到 `/etc/apt/backup-<時間>/`。如果仍然失敗，請把錯誤訊息完整貼出來
-- **金鶴說系統有狀況、沒辦法求籤**：執行 `bash scripts/setup.sh --check` 看「求籤後端」那幾項；常見原因是 `BACKEND_URL` 打錯或後端的 `DJANGO_ALLOWED_HOSTS` 沒有包含這個主機
+- **金鶴說系統有狀況、沒辦法解籤**：執行 `bash scripts/setup.sh --check` 看「求籤後端」那幾項；常見原因是 `BACKEND_URL` 打錯或後端的 `DJANGO_ALLOWED_HOSTS` 沒有包含這個主機
 - **聽到自己的聲音一直自言自語**（VAD 模式）：程式在說話時會暫停收音；仍有問題就把 `ECHO_GUARD_S`（`companion.py`）調大，或改用 `button` 模式
 - **沒有聲音 / 錄不到音**：用 `arecord -d 3 test.wav && aplay test.wav` 確認 Voice Bonnet 正常，必要時在 `config.yaml` 指定 ALSA 裝置
 - **反應慢**：大部分時間花在網路上，確認 Wi-Fi 訊號；也可以把 `silence_ms` 調小一點（例如 800）

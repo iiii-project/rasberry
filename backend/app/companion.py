@@ -53,7 +53,6 @@ class Companion:
         self.tts = TextToSpeech(cfg["tts"])
         self.speaker = Speaker(audio)
         self.board = Board(cfg.get("hardware") or {})
-        self.beep = audio.get("beep_on_hear", True)
         self.mode = audio.get("mode", "vad")
         self.recorder = None
         self.stt = None
@@ -74,8 +73,6 @@ class Companion:
             await cancel_and_wait(self._warmup)
         if self.recorder:
             await self.recorder.stop()
-        if self.backend:
-            await self.backend.close()
         self.board.close()
 
     async def _warm_cache(self) -> None:
@@ -129,9 +126,6 @@ class Companion:
             task.result()
 
     async def _handle_utterance(self, pcm: bytes) -> None:
-        self.board.led("thinking")
-        if self.beep:
-            await self.speaker.beep()
         try:
             text = await self.stt.transcribe(pcm, self.rate)
         except asyncio.CancelledError:
@@ -154,7 +148,6 @@ class Companion:
 
     # ---- 回應一句話（不會拋出例外，取消除外） ----
     async def respond(self, user_text: str) -> None:
-        self.board.led("thinking")
         try:
             await self._speak_reply(user_text)
         except asyncio.CancelledError:
@@ -183,7 +176,7 @@ class Companion:
             splitter = SentenceSplitter()
             try:
                 async for delta in self.brain.chat(user_text):
-                    # FLUSH：要開始查資料了，先把「好，我幫你搖一支籤」這種半句話念出來
+                    # FLUSH：要開始查資料了，模型若已說了半句話，先把它念出來
                     pieces = splitter.flush() if delta == FLUSH else splitter.feed(delta)
                     for s in pieces:
                         await sentences.put(s)

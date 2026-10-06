@@ -26,7 +26,6 @@ class Speaker:
     def __init__(self, cfg: dict):
         self.device = cfg.get("output_device")  # ALSA 裝置名稱
         self.volume = float(cfg.get("volume", 1.0))
-        self._beep = _make_beep(volume=0.25 * self.volume)  # 啟動時算好，之後直接播
 
     def _mpg123_cmd(self) -> list:
         cmd = ["mpg123", "-q", "-f", str(int(32768 * self.volume))]
@@ -64,16 +63,3 @@ class Speaker:
         chunks.put_nowait(mp3)
         chunks.put_nowait(None)
         await self.play_stream(chunks)
-
-    async def beep(self) -> None:
-        """提示音只是輔助，失敗時記錄下來就好，不影響後續辨識。"""
-        cmd = ["aplay", "-q", "-t", "raw", "-f", "S16_LE", "-r", str(BEEP_RATE), "-c", "1"]
-        if self.device:
-            cmd += ["-D", self.device]
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
-            )
-            await proc.communicate(self._beep)
-        except OSError as e:
-            log.warning("提示音播放失敗：%s", e)

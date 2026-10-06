@@ -1,7 +1,8 @@
-"""給 LLM 呼叫的工具（OpenAI function calling），背後接 iiii-project-backend 的資料。
+"""給 LLM 呼叫的工具（OpenAI function calling），唯讀查詢 iiii-project-backend 的資料。
+金鶴只做對話，不會搖籤（不建立求籤紀錄）。
 
-每個工具回傳 (給 LLM 看的結果 JSON, 要記住的求籤資料或 None)。求籤資料會放進 system prompt
-的資料區塊，就算對話紀錄被截斷，金鶴也一直記得這次抽到哪支籤。
+每個工具回傳 (給 LLM 看的結果 JSON, 要記住的籤詩資料或 None)。籤詩資料會放進 system prompt
+的資料區塊，就算對話紀錄被截斷，金鶴也一直記得正在解哪一支籤。
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ import asyncio
 import json
 import logging
 
-from .fortune_backend import CATEGORIES, CATEGORY_NAMES, BackendError, FortuneBackend
+from .fortune_backend import CATEGORY_NAMES, BackendError, FortuneBackend
 
 log = logging.getLogger(__name__)
 
@@ -18,30 +19,8 @@ SCHEMAS = [
     {
         "type": "function",
         "function": {
-            "name": "draw_fortune",
-            "description": "幫信眾求一支籤：在廟裡的系統建立求籤紀錄、抽籤、擲筊，回傳抽到的籤詩與各方面的解說。"
-                           "必須先知道信眾想問什麼事才能呼叫。",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "question": {"type": "string", "description": "信眾想問的事，用一句完整的話描述，2 到 300 字"},
-                    "categories": {
-                        "type": "array",
-                        "items": {"type": "string", "enum": list(CATEGORIES)},
-                        "description": "問題類別，可以多選：love 感情、career 事業、study 學業、wealth 財運、"
-                                       "health 健康、family 家庭、relationship 人際、travel 出行、other 其他",
-                    },
-                },
-                "required": ["question", "categories"],
-                "additionalProperties": False,
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
             "name": "lookup_fortune",
-            "description": "用籤號查詢籤詩內容（例如信眾已經抽好籤、只是想請你解第幾籤）。",
+            "description": "用籤號查詢籤詩內容。信眾說出抽到第幾籤、請你解籤時使用。",
             "parameters": {
                 "type": "object",
                 "properties": {"number": {"type": "integer", "minimum": 1, "description": "籤號"}},
@@ -82,12 +61,8 @@ def _fortune_view(fortune: dict, categories: list) -> dict:
     }
 
 
-def _context_text(view: dict, question: str = "", categories: list = ()) -> str:
-    lines = []
-    if question:
-        cats = "、".join(CATEGORY_NAMES.get(c, c) for c in categories)
-        lines.append("信眾這次問的事：{}（類別：{}）".format(question, cats))
-    lines.append("抽到：{}".format(view["籤"]))
+def _context_text(view: dict) -> str:
+    lines = ["信眾抽到：{}".format(view["籤"])]
     lines.append("籤詩：{}".format(view["籤詩"]))
     lines.append("白話：{}".format(view["白話"]))
     if view["典故"]:
@@ -124,21 +99,6 @@ class FortuneTools:
             log.exception("工具 %s 發生錯誤", name)
             result, context = {"error": "廟裡的系統暫時連不上（{}）".format(type(e).__name__)}, None
         return json.dumps(result, ensure_ascii=False), context
-
-    async def _draw_fortune(self, question: str, categories: list = None) -> tuple:
-        if not isinstance(question, str) or len(question.strip()) < 2:
-            raise ValueError("question 至少要 2 個字")
-        categories = [c for c in (categories or []) if c in CATEGORIES] or ["other"]
-        session = await self.backend.draw_fortune(question, categories)
-        fortune = session.get("fortune")
-        if not fortune:
-            raise BackendError("NO_FORTUNE", "抽籤沒有成功，請再試一次")
-        view = _fortune_view(fortune, categories)
-        block = session.get("block") or {}
-        view["擲筊"] = block.get("result_name") or "未擲筊"
-        view["已確認"] = bool(block.get("confirmed"))
-        log.info("🎋 抽到 %s（%s）", view["籤"], view["擲筊"])
-        return view, _context_text(view, question, categories)
 
     async def _lookup_fortune(self, number: int) -> tuple:
         fortune = await self.backend.lookup_fortune(int(number))
